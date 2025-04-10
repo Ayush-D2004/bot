@@ -10,8 +10,8 @@ short_window = 7
 long_window = 30
 
 # Telegram settings
-TELEGRAM_TOKEN = '8109126651:AAE6zAGJ3J4OxLrRcTlFyTXAqUmnJnVc7qk'
-TELEGRAM_CHAT_ID = '6295648887'
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
  
 # Store price data and position state
 prices = []
