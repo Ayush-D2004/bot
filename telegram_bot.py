@@ -10,8 +10,8 @@ import time
 # === Trading parameters ===
 symbol = 'LTCUSDT'
 timeframe = '5m'
-short_window = 2
-long_window = 5
+short_window = 7
+long_window = 30
 
 # === Telegram settings ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
