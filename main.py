@@ -238,23 +238,27 @@ def on_message(ws, message):
             # Determine current signal
             current_signal = 'long' if short_ma > long_ma else 'short'
             
-            # Only trade on signal change and sufficient price movement
-            if current_signal != last_signal and price_movement >= MIN_PRICE_MOVEMENT:
+            # If no position, open one based on current signal
+            if position == 0 and price_movement >= MIN_PRICE_MOVEMENT:
+                if current_signal == 'long':
+                    place_order(SIDE_BUY, quantity)
+                    place_stop_loss(price, SIDE_BUY)
+                elif current_signal == 'short':
+                    place_order(SIDE_SELL, quantity)
+                    place_stop_loss(price, SIDE_SELL)
+                last_signal = current_signal
+                logging.info(f"Opened new {current_signal} position")
+            
+            # Only change position on crossover (when signal changes)
+            elif current_signal != last_signal and price_movement >= MIN_PRICE_MOVEMENT:
                 if current_signal == 'long':          # BUY signal
                     if position < 0:  # If we have a short position
                         place_order(SIDE_BUY, abs(position))    #close original order
                         place_order(SIDE_BUY, quantity)
                         place_stop_loss(price, SIDE_BUY)
-                    elif position == 0:  
-                        place_order(SIDE_BUY, quantity)
-                        place_stop_loss(price, SIDE_BUY)
-                        
                 elif current_signal == 'short':        # Sell signal
                     if position > 0:  # If we have a long position
                         place_order(SIDE_SELL, abs(position))   #close original order
-                        place_order(SIDE_SELL, quantity)
-                        place_stop_loss(price, SIDE_SELL)
-                    elif position == 0:  
                         place_order(SIDE_SELL, quantity)
                         place_stop_loss(price, SIDE_SELL)
                 
@@ -366,7 +370,7 @@ def run_trading_bot():
             setup_leverage()
             
             # Initialize websocket connection
-            websocket.enableTrace(True)
+            websocket.enableTrace(False)  # Disable WebSocket trace messages
             ws = websocket.WebSocketApp(
                 "wss://fstream.binance.com/ws",
                 on_message=on_message,
