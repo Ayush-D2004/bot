@@ -158,17 +158,38 @@ def calculate_position_size():
     try:
         # Get account balance
         account = client.futures_account_balance()
+        if not account:
+            logging.error("Failed to get account balance")
+            return 0
+            
         usdt_balance = next((float(balance['balance']) for balance in account if balance['asset'] == 'USDT'), 0)
+        if usdt_balance <= 0:
+            logging.error(f"Invalid USDT balance: {usdt_balance}")
+            return 0
         
         # Get current price
         ticker = client.futures_symbol_ticker(symbol=symbol)
+        if not ticker or 'price' not in ticker:
+            logging.error("Failed to get current price")
+            return 0
+            
         current_price = float(ticker['price'])
+        if current_price <= 0:
+            logging.error(f"Invalid current price: {current_price}")
+            return 0
         
         # Calculate position size (using 95% of balance with leverage)
         position_size = (usdt_balance * (ACCOUNT_USAGE_PERCENTAGE / 100) * leverage) / current_price
+        
+        # Log the calculation details
+        logging.info(f"Position size calculation: Balance={usdt_balance}, Price={current_price}, Size={position_size}")
+        
         return round(position_size, 3)  # Round to 3 decimal places
     except Exception as e:
-        logging.error(f"Error calculating position size: {e}")
+        logging.error(f"Error calculating position size: {str(e)}")
+        logging.error(f"Error type: {type(e).__name__}")
+        if isinstance(e, Exception) and hasattr(e, '__dict__'):
+            logging.error(f"Error details: {e.__dict__}")
         return 0
 
 def place_stop_loss(entry_price, side):
