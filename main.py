@@ -43,11 +43,11 @@ logging.basicConfig(
 # Initialize Binance client
 api_key = os.getenv('api_key')
 api_secret = os.getenv('api_secret')
-client = Client(api_key, api_secret)
+client = Client(api_key, api_secret, testnet=True)
 client.FUTURES_URL = 'https://testnet.binancefuture.com'
 
 # Trading parameters
-symbol = 'LTCUSDT'
+symbol = 'BTCUSDT'
 timeframe = '5m'
 short_window = 7
 long_window = 30
@@ -247,14 +247,17 @@ def on_message(ws, message):
             short_ma = df.rolling(window=short_window).mean().iloc[-1]
             long_ma = df.rolling(window=long_window).mean().iloc[-1]
             
+            # Calculate price movement
+            price_movement = abs((short_ma - long_ma) / long_ma * 100)
+            
+            # Debug logging for MA calculations
+            logging.info(f"📊 MA Debug - Short MA: {short_ma:.2f}, Long MA: {long_ma:.2f}, Movement: {price_movement:.2f}%")
+            
             # Get current position
             position = get_position()
             
             # Calculate new position size
             quantity = calculate_position_size()
-            
-            # Calculate price movement
-            price_movement = abs((short_ma - long_ma) / long_ma * 100)
             
             # Determine current signal
             current_signal = 'long' if short_ma > long_ma else 'short'
@@ -285,7 +288,7 @@ def on_message(ws, message):
                 
                 # Update last signal
                 last_signal = current_signal
-                logging.info(f"Signal changed to: {current_signal}, Price movement: {price_movement}%")
+                logging.info(f"Signal changed to: {current_signal}, Price movement: {price_movement:.2f}%")
                 
     except Exception as e:
         logging.error(f"Error in message handling: {e}")
@@ -320,6 +323,9 @@ def get_position():
 
 def place_order(side, quantity):
     try:
+        # Log order attempt
+        logging.info(f"🔄 Attempting to place order: Side={'BUY' if side == SIDE_BUY else 'SELL'}, Quantity={quantity}")
+        
         order = client.futures_create_order(
             symbol=symbol,
             side=side,
@@ -333,14 +339,14 @@ def place_order(side, quantity):
         message += f"Price: {order.get('avgPrice', 'N/A')}\n"
         message += f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         send_telegram_message(message)
-        logging.info(f"Order placed: {order}")
+        logging.info(f"✅ Order placed successfully: {order}")
     except Exception as e:
         error_message = f"❌ <b>Order Error</b>\n"
         error_message += f"Symbol: {symbol}\n"
         error_message += f"Side: {'BUY' if side == SIDE_BUY else 'SELL'}\n"
         error_message += f"Error: {str(e)}"
         send_telegram_message(error_message)
-        logging.error(f"Error placing order: {e}")
+        logging.error(f"❌ Failed to place order: {str(e)}")
 
 def close_all_positions():
     try:
