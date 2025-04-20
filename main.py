@@ -3,6 +3,7 @@ import json
 import pandas as pd
 import numpy as np
 from binance.client import Client
+from binance.exceptions import APIError
 from binance.enums import SIDE_BUY, SIDE_SELL, ORDER_TYPE_MARKET, FUTURE_ORDER_TYPE_STOP_MARKET
 import time
 from datetime import datetime
@@ -43,8 +44,8 @@ logging.basicConfig(
 # Initialize Binance client
 api_key = os.getenv('api_key')
 api_secret = os.getenv('api_secret')
-client = Client(api_key, api_secret, testnet=True)
-client.FUTURES_URL = 'https://testnet.binancefuture.com'
+client = Client(api_key, api_secret)
+client.FUTURES_URL = 'https://fapi.binance.com'
 
 # Trading parameters
 symbol = 'BTCUSDT'
@@ -239,6 +240,11 @@ def calculate_position_size():
 
 def place_stop_loss(entry_price, side):
     try:
+        # If entry_price is None or 0, fetch current price
+        if not entry_price:
+            ticker = client.futures_symbol_ticker(symbol=symbol)
+            entry_price = float(ticker['price'])
+            
         stop_price = entry_price * (1 - STOP_LOSS_PERCENTAGE/100) if side == SIDE_BUY else entry_price * (1 + STOP_LOSS_PERCENTAGE/100)
         position = get_position()
         
@@ -287,10 +293,10 @@ def on_message(ws, message):
             prices = prices[-long_window:]
         
         # Calculate moving averages
-        if len(prices) >= long_window:
+        if len(prices) >= 1:  # Changed from long_window to 1
             df = pd.Series(prices)
-            short_ma = df.rolling(window=short_window).mean().iloc[-1]
-            long_ma = df.rolling(window=long_window).mean().iloc[-1]
+            short_ma = df.rolling(window=short_window, min_periods=1).mean().iloc[-1]
+            long_ma = df.rolling(window=long_window, min_periods=1).mean().iloc[-1]
             
             # Calculate price movement for logging only
             price_movement = abs((short_ma - long_ma) / long_ma * 100)
@@ -371,12 +377,47 @@ def place_order(side, quantity):
         # Log order attempt
         logging.info(f"🔄 Attempting to place order: Side={'BUY' if side == SIDE_BUY else 'SELL'}, Quantity={quantity}")
         
-        order = client.futures_create_order(
-            symbol=symbol,
-            side=side,
-            type=ORDER_TYPE_MARKET,
-            quantity=quantity
-        )
+        try:
+            order = client.futures_create_order(
+                symbol=symbol,
+                side=side,
+                type=ORDER_TYPE_MARKET,
+                quantity=quantity
+            )
+        except APIError as e:
+            # Check if it's a timeout error (-1007)
+            if e.code == -1007:
+                logging.warning("⚠️ Order timeout (-1007) - Checking if order was actually placed...")
+                
+                # Wait a moment for the order to potentially process
+                time.sleep(2)
+                
+                # Get current position to check if order went through
+                current_position = get_position()
+                expected_position = quantity if side == SIDE_BUY else -quantity
+                
+                # If position matches what we expected, order went through
+                if abs(current_position) == abs(expected_position):
+                    logging.info("✅ Order actually went through despite timeout")
+                    message = f"🟢 <b>Order Placed (Recovered from Timeout)</b>\n"
+                    message += f"Symbol: {symbol}\n"
+                    message += f"Side: {'BUY' if side == SIDE_BUY else 'SELL'}\n"
+                    message += f"Quantity: {quantity}\n"
+                    message += f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                    send_telegram_message(message)
+                    return
+                
+                # If position didn't change, order didn't go through
+                logging.error("❌ Order did not go through - will retry")
+                raise e  # Re-raise to trigger retry
+            
+            # For other API errors, just raise them
+            raise e
+        except Exception as e:
+            # For non-API errors, just raise them
+            raise e
+        
+        # If we get here, order was successful
         message = f"🟢 <b>Order Placed</b>\n"
         message += f"Symbol: {symbol}\n"
         message += f"Side: {'BUY' if side == SIDE_BUY else 'SELL'}\n"
@@ -385,6 +426,7 @@ def place_order(side, quantity):
         message += f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         send_telegram_message(message)
         logging.info(f"✅ Order placed successfully: {order}")
+        
     except Exception as e:
         error_message = f"❌ <b>Order Error</b>\n"
         error_message += f"Symbol: {symbol}\n"
@@ -425,6 +467,19 @@ def close_all_positions():
         send_telegram_message(error_message)
         logging.error(f"Error closing positions: {e}")
 
+async def run_telegram_bot():
+        
+    global telegram_app
+    telegram_app = Application.builder().token(TELEGRAM_TOKEN).build()
+    telegram_app.add_handler(CommandHandler("start", start))
+    telegram_app.add_handler(CommandHandler("status", check_position_command))
+    telegram_app.add_handler(CallbackQueryHandler(button_callback))
+    
+    # Start the bot
+    await telegram_app.initialize()
+    await telegram_app.start()
+    await telegram_app.run_polling()
+
 def run_trading_bot():
     """Run the trading bot"""
     # Send startup message
@@ -444,21 +499,24 @@ def run_trading_bot():
             # Initialize websocket connection
             websocket.enableTrace(False)  # Disable WebSocket trace messages
             ws = websocket.WebSocketApp(
-                "wss://fstream.binance.com/ws",
+                f"wss://fstream.binance.com/ws/{symbol.lower()}@kline_{timeframe}",
                 on_message=on_message,
                 on_error=on_error,
                 on_close=on_close,
                 on_open=on_open
             )
             
-            # Start a separate thread to monitor connection
+            # Start connection monitor thread
             def connection_monitor():
                 while True:
-                    time.sleep(10)
-                    if time.time() - last_websocket_message > WEBSOCKET_TIMEOUT:
-                        message = "⚠️ <b>WebSocket Connection Lost</b>\nAttempting to reconnect..."
+                    time.sleep(10)  # Check every 10 seconds
+                    current_time = time.time()
+                    if current_time - last_websocket_message > WEBSOCKET_TIMEOUT:
+                        message = "⚠️ <b>WebSocket Connection Lost</b>\n"
+                        message += f"Last message received: {datetime.fromtimestamp(last_websocket_message).strftime('%Y-%m-%d %H:%M:%S')}\n"
+                        message += "Attempting to reconnect..."
                         send_telegram_message(message)
-                        logging.warning("WebSocket connection seems dead, restarting...")
+                        logging.warning(f"WebSocket connection stale (last message: {last_websocket_message}), restarting...")
                         ws.close()
                         break
             
@@ -466,8 +524,8 @@ def run_trading_bot():
             monitor_thread.daemon = True
             monitor_thread.start()
             
-            # Run websocket
-            ws.run_forever()
+            # Run websocket with ping settings
+            ws.run_forever(ping_interval=20, ping_timeout=10)
             
         except KeyboardInterrupt:
             message = "🛑 <b>Bot Stopped by User</b>\nClosing all positions..."
@@ -486,33 +544,31 @@ def run_trading_bot():
             logging.info("All positions closed. Attempting to restart in 60 seconds...")
             time.sleep(60)  # Wait before reconnecting
 
-def main():
+async def main():
+    """Main async function to run all components"""
+    # Start Flask in a separate thread
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    
+    # Start Telegram bot
+    telegram_task = asyncio.create_task(run_telegram_bot())
+    
+    # Start trading bot in a separate thread
+    trading_thread = threading.Thread(target=run_trading_bot, daemon=True)
+    trading_thread.start()
+    
+    # Wait for Telegram bot to complete (it won't unless there's an error)
+    await telegram_task
+
+if __name__ == "__main__":
     # Create event loop
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
-    # Start Flask app in a thread
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.daemon = True
-    flask_thread.start()
-    
-    # Start Telegram bot in a separate thread
-    def run_telegram():
-        if not TELEGRAM_TOKEN:
-            logging.error("TELEGRAM_TOKEN not set")
-            return
-        app = Application.builder().token(TELEGRAM_TOKEN).build()
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("status", check_position_command))
-        app.add_handler(CallbackQueryHandler(button_callback))
-        app.run_polling(allowed_updates=Update.ALL_TYPES)
-    
-    telegram_thread = threading.Thread(target=run_telegram)
-    telegram_thread.daemon = True
-    telegram_thread.start()
-    
-    # Run trading bot in the main thread
-    run_trading_bot()
-
-if __name__ == "__main__":
-    main()
+    try:
+        # Run main async function
+        loop.run_until_complete(main())
+    except KeyboardInterrupt:
+        logging.info("Shutting down...")
+    finally:
+        loop.close()
