@@ -54,7 +54,6 @@ long_window = 30
 leverage = 10
 ACCOUNT_USAGE_PERCENTAGE = 95  # Use 95% of account balance
 STOP_LOSS_PERCENTAGE = 2  # 2% stop loss
-MIN_PRICE_MOVEMENT = 0.5  # Minimum price movement percentage to trigger trade
 
 # Store price data and position state
 prices = []
@@ -126,6 +125,52 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         except Exception as e:
             error_message = f"❌ <b>Error Getting Position</b>\n{str(e)}"
             await query.edit_message_text(text=error_message, parse_mode='HTML')
+
+async def check_position_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle the /status command"""
+    if update.message is None:
+        return
+        
+    try:
+        # Get account balance
+        account = client.futures_account_balance()
+        if not account:
+            await update.message.reply_text("❌ Failed to get account balance")
+            return
+            
+        usdt_balance = next((float(balance['balance']) for balance in account if balance['asset'] == 'USDT'), 0)
+        if usdt_balance <= 0:
+            await update.message.reply_text("❌ Invalid USDT balance")
+            return
+        
+        # Get current position
+        position = get_position()
+        position_info = client.futures_position_information(symbol=symbol)
+        position_data = position_info[0] if position_info else None
+        
+        # Get current price
+        ticker = client.futures_symbol_ticker(symbol=symbol)
+        current_price = float(ticker['price'])
+        
+        # Calculate unrealized PNL
+        unrealized_pnl = float(position_data['unRealizedProfit']) if position_data else 0
+        
+        # Format message
+        message = f"💰 <b>Account Status</b>\n\n"
+        message += f"Balance: {usdt_balance:.2f} USDT\n"
+        message += f"Current Position: {abs(position):.3f} {symbol}\n"
+        message += f"Position Type: {'Long' if position > 0 else 'Short' if position < 0 else 'None'}\n"
+        message += f"Entry Price: {position_data['entryPrice'] if position_data else 'N/A'}\n"
+        message += f"Current Price: {current_price}\n"
+        message += f"Unrealized PNL: {unrealized_pnl:.2f} USDT\n"
+        message += f"Leverage: {leverage}x\n"
+        message += f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        
+        await update.message.reply_text(message, parse_mode='HTML')
+        
+    except Exception as e:
+        error_message = f"❌ <b>Error Getting Status</b>\n{str(e)}"
+        await update.message.reply_text(error_message, parse_mode='HTML')
 
 def send_telegram_message(message: str) -> None:
     """Send a message to Telegram"""
@@ -247,7 +292,7 @@ def on_message(ws, message):
             short_ma = df.rolling(window=short_window).mean().iloc[-1]
             long_ma = df.rolling(window=long_window).mean().iloc[-1]
             
-            # Calculate price movement
+            # Calculate price movement for logging only
             price_movement = abs((short_ma - long_ma) / long_ma * 100)
             
             # Debug logging for MA calculations
@@ -263,7 +308,7 @@ def on_message(ws, message):
             current_signal = 'long' if short_ma > long_ma else 'short'
             
             # If no position, open one based on current signal
-            if position == 0 and price_movement >= MIN_PRICE_MOVEMENT:
+            if position == 0:
                 if current_signal == 'long':
                     place_order(SIDE_BUY, quantity)
                     place_stop_loss(price, SIDE_BUY)
@@ -274,7 +319,7 @@ def on_message(ws, message):
                 logging.info(f"Opened new {current_signal} position")
             
             # Only change position on crossover (when signal changes)
-            elif current_signal != last_signal and price_movement >= MIN_PRICE_MOVEMENT:
+            elif current_signal != last_signal:
                 if current_signal == 'long':          # BUY signal
                     if position < 0:  # If we have a short position
                         place_order(SIDE_BUY, abs(position))    #close original order
@@ -288,7 +333,7 @@ def on_message(ws, message):
                 
                 # Update last signal
                 last_signal = current_signal
-                logging.info(f"Signal changed to: {current_signal}, Price movement: {price_movement:.2f}%")
+                logging.info(f"Signal changed to: {current_signal}")
                 
     except Exception as e:
         logging.error(f"Error in message handling: {e}")
@@ -458,6 +503,7 @@ def main():
             return
         app = Application.builder().token(TELEGRAM_TOKEN).build()
         app.add_handler(CommandHandler("start", start))
+        app.add_handler(CommandHandler("status", check_position_command))
         app.add_handler(CallbackQueryHandler(button_callback))
         app.run_polling(allowed_updates=Update.ALL_TYPES)
     
