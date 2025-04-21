@@ -49,7 +49,7 @@ client = Client(api_key, api_secret)
 client.FUTURES_URL = 'https://fapi.binance.com'
 
 # Trading parameters
-symbol = 'BTCUSDT'
+symbol = 'LTCUSDT'
 timeframe = '5m'
 short_window = 7
 long_window = 30
