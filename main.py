@@ -292,8 +292,8 @@ def on_message(ws, message):
         if len(prices) > long_window:
             prices = prices[-long_window:]
         
-        # Calculate moving averages
-        if len(prices) >= 1:  # Changed from long_window to 1
+        # Only proceed if we have enough data points
+        if len(prices) >= long_window:
             df = pd.Series(prices)
             short_ma = df.rolling(window=short_window, min_periods=1).mean().iloc[-1]
             long_ma = df.rolling(window=long_window, min_periods=1).mean().iloc[-1]
@@ -340,6 +340,8 @@ def on_message(ws, message):
                 # Update last signal
                 last_signal = current_signal
                 logging.info(f"Signal changed to: {current_signal}")
+        else:
+            logging.info(f"Waiting for more data points ({len(prices)}/{long_window})")
                 
     except Exception as e:
         logging.error(f"Error in message handling: {e}")
