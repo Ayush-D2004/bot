@@ -16,6 +16,7 @@ import asyncio
 from typing import Optional
 import threading
 from flask import Flask
+from decimal import Decimal, ROUND_DOWN
 
 # Initialize Flask app
 flask_app = Flask(__name__)
@@ -283,10 +284,10 @@ def on_message(ws, message):
         if 'k' not in data:  # Skip non-kline messages
             return
             
-        price = float(data['k']['c'])  # Closing price
+        price = Decimal(data['k']['c'])  # Closing price as Decimal
         
         # Add price to our list
-        prices.append(price)
+        prices.append(float(price))  # Keep prices as float for pandas operations
         
         # Keep only the last long_window prices
         if len(prices) > long_window:
@@ -308,34 +309,34 @@ def on_message(ws, message):
             position = get_position()
             
             # Calculate new position size
-            quantity = calculate_position_size()
+            quantity = Decimal(str(calculate_position_size())).quantize(Decimal('0.001'), rounding=ROUND_DOWN)
             
             # Determine current signal
             current_signal = 'long' if short_ma > long_ma else 'short'
             
             # If no position, open one based on current signal
-            if position == 0:
+            if position == Decimal('0'):
                 if current_signal == 'long':
-                    place_order(SIDE_BUY, quantity)
-                    place_stop_loss(price, SIDE_BUY)
+                    place_order(SIDE_BUY, float(quantity))  # Convert to float for API call
+                    place_stop_loss(float(price), SIDE_BUY)
                 elif current_signal == 'short':
-                    place_order(SIDE_SELL, quantity)
-                    place_stop_loss(price, SIDE_SELL)
+                    place_order(SIDE_SELL, float(quantity))  # Convert to float for API call
+                    place_stop_loss(float(price), SIDE_SELL)
                 last_signal = current_signal
                 logging.info(f"Opened new {current_signal} position")
             
             # Only change position on crossover (when signal changes)
             elif current_signal != last_signal:
                 if current_signal == 'long':          # BUY signal
-                    if position < 0:  # If we have a short position
-                        place_order(SIDE_BUY, abs(position))    #close original order
-                        place_order(SIDE_BUY, quantity)
-                        place_stop_loss(price, SIDE_BUY)
+                    if position < Decimal('0'):  # If we have a short position
+                        place_order(SIDE_BUY, float(abs(position)))    #close original order
+                        place_order(SIDE_BUY, float(quantity))
+                        place_stop_loss(float(price), SIDE_BUY)
                 elif current_signal == 'short':        # Sell signal
-                    if position > 0:  # If we have a long position
-                        place_order(SIDE_SELL, abs(position))   #close original order
-                        place_order(SIDE_SELL, quantity)
-                        place_stop_loss(price, SIDE_SELL)
+                    if position > Decimal('0'):  # If we have a long position
+                        place_order(SIDE_SELL, float(abs(position)))   #close original order
+                        place_order(SIDE_SELL, float(quantity))
+                        place_stop_loss(float(price), SIDE_SELL)
                 
                 # Update last signal
                 last_signal = current_signal
@@ -368,11 +369,11 @@ def get_position():
         # Get current position from futures account
         position_info = client.futures_position_information(symbol=symbol)
         if position_info:
-            return float(position_info[0]['positionAmt'])
-        return 0
+            return Decimal(position_info[0]['positionAmt'])
+        return Decimal('0')
     except Exception as e:
         print(f"Error getting position: {e}")
-        return 0
+        return Decimal('0')
 
 def place_order(side, quantity):
     try:
